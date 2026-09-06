@@ -4,10 +4,8 @@ import requests
 
 app = Flask(__name__)
 
-# ضع الـ Hugging Face Token في متغير البيئة
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# نموذج الذكاء الاصطناعي
 MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
 conversation = []
@@ -15,7 +13,10 @@ conversation = []
 
 @app.route("/", methods=["GET"])
 def home():
-    return "My AI Server is running!"
+    return jsonify({
+        "status": "ok",
+        "message": "My AI Server is running!"
+    })
 
 
 @app.route("/chat", methods=["POST"])
@@ -23,11 +24,17 @@ def chat():
     global conversation
 
     try:
-        data = request.get_json()
+        # التأكد من وجود Token
+        if not HF_TOKEN:
+            return jsonify({
+                "reply": "خطأ: HF_TOKEN غير موجود في Environment Variables."
+            }), 500
+
+        data = request.get_json(silent=True)
 
         if not data:
             return jsonify({
-                "reply": "لم يتم استلام البيانات."
+                "reply": "لم يتم استلام بيانات JSON صحيحة."
             }), 400
 
         message = data.get("message", "").strip()
@@ -37,13 +44,13 @@ def chat():
                 "reply": "الرسالة فارغة."
             }), 400
 
-        # إضافة رسالة المستخدم للذاكرة
+        # إضافة رسالة المستخدم
         conversation.append({
             "role": "user",
             "content": message
         })
 
-        # آخر 10 رسائل فقط
+        # الاحتفاظ بآخر 10 رسائل
         messages = conversation[-10:]
 
         headers = {
@@ -54,8 +61,12 @@ def chat():
         payload = {
             "model": MODEL,
             "messages": messages,
-            "max_tokens": 500
+            "max_tokens": 500,
+            "temperature": 0.7
         }
+
+        print("Sending request to Hugging Face...")
+        print("Model:", MODEL)
 
         response = requests.post(
             "https://router.huggingface.co/v1/chat/completions",
@@ -64,14 +75,28 @@ def chat():
             timeout=120
         )
 
-        if response.status_code != 200:
-            print("Hugging Face Error:", response.text)
+        print("Hugging Face Status:", response.status_code)
+        print("Hugging Face Response:", response.text)
 
+        # في حال حدوث خطأ من Hugging Face
+        if response.status_code != 200:
             return jsonify({
-                "reply": "حدث خطأ في الاتصال بخدمة الذكاء الاصطناعي."
+                "reply": f"خطأ من Hugging Face. رمز الخطأ: {response.status_code}",
+                "details": response.text
             }), 500
 
         result = response.json()
+
+        # التأكد من وجود الرد
+        if (
+            "choices" not in result
+            or not result["choices"]
+            or "message" not in result["choices"][0]
+        ):
+            return jsonify({
+                "reply": "لم يتم العثور على رد صحيح من الذكاء الاصطناعي.",
+                "details": result
+            }), 500
 
         answer = result["choices"][0]["message"]["content"]
 
@@ -83,13 +108,25 @@ def chat():
 
         return jsonify({
             "reply": answer
-        })
+        }), 200
 
-    except Exception as error:
-        print("ERROR:", str(error))
+    except requests.exceptions.Timeout:
+        return jsonify({
+            "reply": "انتهت مهلة الاتصال بخدمة الذكاء الاصطناعي."
+        }), 500
+
+    except requests.exceptions.RequestException as error:
+        print("REQUEST ERROR:", str(error))
 
         return jsonify({
-            "reply": "حدث خطأ: " + str(error)
+            "reply": f"خطأ في الاتصال: {str(error)}"
+        }), 500
+
+    except Exception as error:
+        print("SERVER ERROR:", repr(error))
+
+        return jsonify({
+            "reply": f"خطأ في السيرفر: {str(error)}"
         }), 500
 
 
