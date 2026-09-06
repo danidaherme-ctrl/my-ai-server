@@ -6,7 +6,7 @@ app = Flask(__name__)
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-MODEL = "Qwen/Qwen2.5-7B-Instruct"
+MODEL = "Qwen/Qwen2.5-7B-Instruct-1M"
 
 conversation = []
 
