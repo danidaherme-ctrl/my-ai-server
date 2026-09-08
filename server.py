@@ -138,9 +138,12 @@ with app.app_context():
     db.create_all()
 
 
-HF_TOKEN = os.environ.get("HF_TOKEN")
-MODEL = "Qwen/Qwen3-8B:nscale"
-HF_URL = "https://router.huggingface.co/v1/chat/completions"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
+)
 
 # Production request limits.
 MAX_MESSAGE_LENGTH = 8000
@@ -702,9 +705,9 @@ def delete_conversation(conversation_id):
 @auth_required
 def chat():
     try:
-        if not HF_TOKEN:
+        if not GEMINI_API_KEY:
             return jsonify({
-                "reply": "خطأ: HF_TOKEN غير موجود في Environment Variables."
+                "reply": "خطأ: GEMINI_API_KEY غير موجود في Environment Variables."
             }), 500
 
         user = request.current_user
@@ -719,7 +722,6 @@ def chat():
                 "reply": f"الرسالة طويلة جدًا. الحد الأقصى {MAX_MESSAGE_LENGTH} حرف."
             }), 413
 
-        # Enforce the current FREE/PRO daily message limit.
         plan, _ = get_user_plan(user.id)
         usage = get_usage_counter(user.id)
         message_limit = get_message_limit(plan)
@@ -749,8 +751,6 @@ def chat():
             if not conversation:
                 return jsonify({"reply": "المحادثة غير موجودة."}), 404
         else:
-            # Current Flutter remains compatible:
-            # use the latest conversation or create one automatically.
             conversation = get_latest_conversation(user.id)
             if not conversation:
                 conversation = create_new_conversation(user.id)
@@ -785,59 +785,72 @@ def chat():
         )
         previous_messages.reverse()
 
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        contents = []
         for msg in previous_messages:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content,
+            role = "model" if msg.role == "assistant" else "user"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg.content}],
             })
 
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": SYSTEM_PROMPT}],
+            },
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 500,
+            },
+        }
+
         headers = {
-            "Authorization": f"Bearer {HF_TOKEN}",
+            "x-goog-api-key": GEMINI_API_KEY,
             "Content-Type": "application/json",
         }
 
-        payload = {
-            "model": MODEL,
-            "messages": messages,
-            "max_tokens": 500,
-            "temperature": 0.7,
-        }
-
-        print("Sending request to Hugging Face...")
-        print("Model:", MODEL)
-        print("Authenticated User ID:", user.id)
+        print("Sending request to Gemini...")
+        print("Model:", GEMINI_MODEL)
+        print("Authenticated User:", user.email)
         print("Conversation:", conversation.id)
 
         response = requests.post(
-            HF_URL,
+            GEMINI_URL,
             headers=headers,
             json=payload,
             timeout=120,
         )
 
-        print("Hugging Face Status:", response.status_code)
+        print("Gemini Status:", response.status_code)
 
         if response.status_code != 200:
-            print("Hugging Face Response:", response.text)
+            print("Gemini Response:", response.text)
             return jsonify({
                 "reply": "حدث خطأ من خدمة الذكاء الاصطناعي.",
-                "error": "ai_provider_error",
-            }), 502
+                "details": response.text,
+            }), 500
 
         result = response.json()
+        candidates = result.get("candidates", [])
 
-        if (
-            "choices" not in result
-            or not result["choices"]
-            or "message" not in result["choices"][0]
-        ):
+        if not candidates:
             return jsonify({
                 "reply": "لم يتم العثور على رد صحيح من الذكاء الاصطناعي.",
-                "error": "invalid_ai_response",
-            }), 502
+                "details": result,
+            }), 500
 
-        answer = result["choices"][0]["message"]["content"]
+        parts = candidates[0].get("content", {}).get("parts", [])
+        answer = "".join(
+            part.get("text", "")
+            for part in parts
+            if isinstance(part, dict) and part.get("text")
+        ).strip()
+
+        if not answer:
+            return jsonify({
+                "reply": "لم يتم العثور على نص في رد الذكاء الاصطناعي.",
+                "details": result,
+            }), 500
 
         db.session.add(ConversationMessage(
             conversation_id=conversation.id,
