@@ -9,7 +9,14 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 app = Flask(__name__)
-CORS(app)
+ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "https://gideonassistant.uk,https://www.gideonassistant.uk"
+)
+CORS(
+    app,
+    resources={r"/*": {"origins": [origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()]}},
+)
 
 database_url = os.environ.get("DATABASE_URL", "sqlite:///dani_ai.db")
 if database_url.startswith("postgres://"):
@@ -19,7 +26,9 @@ app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "CHANGE_THIS_SECRET_IN_RENDER")
+JWT_SECRET = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable is required.")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_DAYS = 30
 
@@ -124,6 +133,12 @@ with app.app_context():
 HF_TOKEN = os.environ.get("HF_TOKEN")
 MODEL = "Qwen/Qwen3-8B:nscale"
 HF_URL = "https://router.huggingface.co/v1/chat/completions"
+
+# Production request limits.
+MAX_MESSAGE_LENGTH = 8000
+MAX_CONVERSATION_TITLE_LENGTH = 160
+MAX_JSON_BODY_BYTES = 64 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BODY_BYTES
 
 SYSTEM_PROMPT = """
 أنت Gideon، مساعد ذكاء اصطناعي تم تطويره بواسطة Daniel.
@@ -341,6 +356,11 @@ def conversation_to_dict(conversation):
     }
 
 
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -364,6 +384,9 @@ def register():
             return jsonify({
                 "error": "البريد الإلكتروني وكلمة المرور مطلوبان."
             }), 400
+
+        if len(email) > 255:
+            return jsonify({"error": "البريد الإلكتروني طويل جدًا."}), 400
 
         if len(password) < 8:
             return jsonify({
@@ -573,6 +596,9 @@ def rename_conversation(conversation_id):
         data = request.get_json(silent=True) or {}
         title = data.get("title", "").strip()
 
+        if len(title) > MAX_CONVERSATION_TITLE_LENGTH:
+            title = title[:MAX_CONVERSATION_TITLE_LENGTH]
+
         if not title:
             return jsonify({"error": "اسم المحادثة مطلوب."}), 400
 
@@ -634,6 +660,11 @@ def chat():
 
         if not message:
             return jsonify({"reply": "الرسالة فارغة."}), 400
+
+        if len(message) > MAX_MESSAGE_LENGTH:
+            return jsonify({
+                "reply": f"الرسالة طويلة جدًا. الحد الأقصى {MAX_MESSAGE_LENGTH} حرف."
+            }), 413
 
         # Enforce the current FREE/PRO daily message limit.
         plan, _ = get_user_plan(user.id)
@@ -722,7 +753,7 @@ def chat():
 
         print("Sending request to Hugging Face...")
         print("Model:", MODEL)
-        print("Authenticated User:", user.email)
+        print("Authenticated User ID:", user.id)
         print("Conversation:", conversation.id)
 
         response = requests.post(
@@ -738,8 +769,8 @@ def chat():
             print("Hugging Face Response:", response.text)
             return jsonify({
                 "reply": "حدث خطأ من خدمة الذكاء الاصطناعي.",
-                "details": response.text,
-            }), 500
+                "error": "ai_provider_error",
+            }), 502
 
         result = response.json()
 
@@ -750,8 +781,8 @@ def chat():
         ):
             return jsonify({
                 "reply": "لم يتم العثور على رد صحيح من الذكاء الاصطناعي.",
-                "details": result,
-            }), 500
+                "error": "invalid_ai_response",
+            }), 502
 
         answer = result["choices"][0]["message"]["content"]
 
