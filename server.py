@@ -68,6 +68,55 @@ class ConversationMessage(db.Model):
     )
 
 
+# Subscription foundation.
+# Payment verification will be connected later to Google Play, Apple, and Whish.
+class Subscription(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, nullable=False, index=True)
+    plan = db.Column(db.String(20), nullable=False, default="FREE", index=True)
+    platform = db.Column(db.String(30), nullable=False, default="manual")
+    product_id = db.Column(db.String(160), nullable=True)
+    transaction_id = db.Column(db.String(255), nullable=True, unique=True, index=True)
+    status = db.Column(db.String(30), nullable=False, default="active", index=True)
+    started_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    auto_renewing = db.Column(db.Boolean, nullable=False, default=False)
+    original_transaction_id = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class UsageCounter(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, nullable=False, unique=True, index=True)
+    period_start = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    messages_used = db.Column(db.Integer, nullable=False, default=0)
+    tokens_used = db.Column(db.Integer, nullable=False, default=0)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 with app.app_context():
     db.create_all()
 
@@ -77,15 +126,116 @@ MODEL = "Qwen/Qwen3-8B:nscale"
 HF_URL = "https://router.huggingface.co/v1/chat/completions"
 
 SYSTEM_PROMPT = """
-أنت dani.ai، مساعد ذكاء اصطناعي تم تطويره بواسطة Daniel.
+أنت Gideon، مساعد ذكاء اصطناعي تم تطويره بواسطة Daniel.
 
 قواعدك:
 - أجب باللغة التي يستخدمها المستخدم.
 - إذا تحدث المستخدم بالعربية، أجب بالعربية.
 - كن واضحًا ومفيدًا وودودًا.
-- إذا سُئلت عن اسمك، قل إن اسمك dani.ai.
+- إذا سُئلت عن اسمك، قل إن اسمك Gideon.
 - إذا سُئلت عن مطورك، قل إنك تم تطويرك بواسطة Daniel.
 """
+
+
+FREE_DAILY_MESSAGE_LIMIT = 20
+PRO_DAILY_MESSAGE_LIMIT = 200
+
+# Gideon Pro launch pricing.
+# This is product metadata only; payment verification is NOT enabled yet.
+PRO_PRODUCT_NAME = "Gideon Pro"
+PRO_MONTHLY_PRICE_USD = 4.99
+PRO_CURRENCY = "USD"
+
+
+def get_active_subscription(user_id):
+    now = datetime.now(timezone.utc)
+
+    subscription = (
+        Subscription.query
+        .filter_by(user_id=user_id, status="active")
+        .order_by(Subscription.updated_at.desc(), Subscription.id.desc())
+        .first()
+    )
+
+    if not subscription:
+        return None
+
+    # SQLite may return DateTime values without timezone information.
+    # Normalize them to UTC before comparing with an aware datetime.
+    if subscription.expires_at:
+        expires_at = subscription.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if expires_at <= now:
+            subscription.status = "expired"
+            db.session.commit()
+            return None
+
+    return subscription
+
+
+def get_user_plan(user_id):
+    subscription = get_active_subscription(user_id)
+    if subscription and subscription.plan.upper() == "PRO":
+        return "PRO", subscription
+    return "FREE", subscription
+
+
+def get_usage_counter(user_id):
+    now = datetime.now(timezone.utc)
+    usage = UsageCounter.query.filter_by(user_id=user_id).first()
+
+    if not usage:
+        usage = UsageCounter(
+            user_id=user_id,
+            period_start=now,
+            messages_used=0,
+            tokens_used=0,
+        )
+        db.session.add(usage)
+        db.session.commit()
+        return usage
+
+    # Daily UTC reset for the first production version.
+    if usage.period_start.date() != now.date():
+        usage.period_start = now
+        usage.messages_used = 0
+        usage.tokens_used = 0
+        usage.updated_at = now
+        db.session.commit()
+
+    return usage
+
+
+def get_message_limit(plan):
+    return PRO_DAILY_MESSAGE_LIMIT if plan == "PRO" else FREE_DAILY_MESSAGE_LIMIT
+
+
+def usage_to_dict(user_id):
+    plan, subscription = get_user_plan(user_id)
+    usage = get_usage_counter(user_id)
+    limit = get_message_limit(plan)
+
+    return {
+        "plan": plan,
+        "messages_used": usage.messages_used,
+        "message_limit": limit,
+        "messages_remaining": max(0, limit - usage.messages_used),
+        "tokens_used": usage.tokens_used,
+        "period_start": usage.period_start.isoformat(),
+        "subscription": {
+            "id": subscription.id,
+            "platform": subscription.platform,
+            "product_id": subscription.product_id,
+            "status": subscription.status,
+            "started_at": subscription.started_at.isoformat()
+            if subscription.started_at else None,
+            "expires_at": subscription.expires_at.isoformat()
+            if subscription.expires_at else None,
+            "auto_renewing": subscription.auto_renewing,
+        } if subscription else None,
+    }
 
 
 def create_token(user):
@@ -195,9 +345,11 @@ def conversation_to_dict(conversation):
 def home():
     return jsonify({
         "status": "ok",
-        "message": "dani.ai Server is running!",
+        "message": "Gideon Server is running!",
         "authentication": "JWT enabled",
         "chat_history": "enabled",
+        "subscriptions": "enabled",
+        "usage_limits": "enabled",
     })
 
 
@@ -237,6 +389,7 @@ def register():
             "user_id": str(user.id),
             "email": user.email,
             "token": token,
+            "plan": "FREE",
         }), 201
 
     except Exception as error:
@@ -271,6 +424,7 @@ def login():
             "user_id": str(user.id),
             "email": user.email,
             "token": token,
+            "plan": get_user_plan(user.id)[0],
         }), 200
 
     except Exception as error:
@@ -286,6 +440,60 @@ def me():
         "user_id": str(user.id),
         "email": user.email,
     }), 200
+
+
+@app.route("/products/pro", methods=["GET"])
+def pro_product():
+    return jsonify({
+        "id": "gideon_pro_monthly",
+        "name": PRO_PRODUCT_NAME,
+        "price": PRO_MONTHLY_PRICE_USD,
+        "currency": PRO_CURRENCY,
+        "billing_period": "month",
+        "status": "coming_soon",
+        "payment_channels": {
+            "google_play": "coming_soon",
+            "apple_app_store": "coming_soon",
+            "whish_pay": "pending_merchant_integration",
+        },
+    }), 200
+
+
+@app.route("/account/plan", methods=["GET"])
+@auth_required
+def account_plan():
+    try:
+        user = request.current_user
+        plan, subscription = get_user_plan(user.id)
+
+        return jsonify({
+            "plan": plan,
+            "subscription": {
+                "id": subscription.id,
+                "platform": subscription.platform,
+                "product_id": subscription.product_id,
+                "status": subscription.status,
+                "started_at": subscription.started_at.isoformat()
+                if subscription.started_at else None,
+                "expires_at": subscription.expires_at.isoformat()
+                if subscription.expires_at else None,
+                "auto_renewing": subscription.auto_renewing,
+            } if subscription else None,
+        }), 200
+    except Exception as error:
+        print("ACCOUNT PLAN ERROR:", repr(error))
+        return jsonify({"error": "تعذر تحميل خطة الحساب."}), 500
+
+
+@app.route("/usage", methods=["GET"])
+@auth_required
+def usage():
+    try:
+        return jsonify(usage_to_dict(request.current_user.id)), 200
+    except Exception as error:
+        db.session.rollback()
+        print("USAGE ERROR:", repr(error))
+        return jsonify({"error": "تعذر تحميل الاستخدام."}), 500
 
 
 @app.route("/conversations", methods=["GET"])
@@ -427,6 +635,21 @@ def chat():
         if not message:
             return jsonify({"reply": "الرسالة فارغة."}), 400
 
+        # Enforce the current FREE/PRO daily message limit.
+        plan, _ = get_user_plan(user.id)
+        usage = get_usage_counter(user.id)
+        message_limit = get_message_limit(plan)
+
+        if usage.messages_used >= message_limit:
+            return jsonify({
+                "reply": "وصلت إلى حد الرسائل اليومي. يمكنك الترقية إلى Gideon Pro لمزيد من الاستخدام.",
+                "error": "daily_message_limit_reached",
+                "plan": plan,
+                "messages_used": usage.messages_used,
+                "message_limit": message_limit,
+                "messages_remaining": 0,
+            }), 429
+
         conversation_id = data.get("conversation_id")
         conversation = None
 
@@ -539,6 +762,7 @@ def chat():
             content=answer,
         ))
 
+        usage.messages_used += 1
         conversation.updated_at = datetime.now(timezone.utc)
         db.session.commit()
 
@@ -546,6 +770,12 @@ def chat():
             "reply": answer,
             "conversation_id": conversation.id,
             "conversation_title": conversation.title,
+            "plan": plan,
+            "usage": {
+                "messages_used": usage.messages_used,
+                "message_limit": message_limit,
+                "messages_remaining": max(0, message_limit - usage.messages_used),
+            },
         }), 200
 
     except requests.exceptions.Timeout:
@@ -581,5 +811,5 @@ def new_chat():
 
 
 if __name__ == "__main__":
-    print("Starting dani.ai Server...")
+    print("Starting Gideon Server...")
     app.run(host="0.0.0.0", port=5000)
