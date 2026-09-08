@@ -7,6 +7,8 @@ import os
 import requests
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth
 
 app = Flask(__name__)
 ALLOWED_ORIGINS = os.environ.get(
@@ -31,6 +33,12 @@ if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET environment variable is required.")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_DAYS = 30
+
+FIREBASE_CREDENTIALS_PATH = "/etc/secrets/firebase-service-account.json"
+
+if not firebase_admin._apps:
+    firebase_credential = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
+    firebase_admin.initialize_app(firebase_credential)
 
 
 class User(db.Model):
@@ -453,6 +461,51 @@ def login():
     except Exception as error:
         print("LOGIN ERROR:", repr(error))
         return jsonify({"error": "حدث خطأ أثناء تسجيل الدخول."}), 500
+
+
+@app.route("/auth/google", methods=["POST"])
+def google_auth():
+    try:
+        data = request.get_json(silent=True) or {}
+        id_token = data.get("id_token", "").strip()
+
+        if not id_token:
+            return jsonify({"error": "Firebase ID token مطلوب."}), 400
+
+        decoded_token = firebase_auth.verify_id_token(id_token)
+        firebase_uid = decoded_token.get("uid")
+        email = (decoded_token.get("email") or "").strip().lower()
+
+        if not firebase_uid or not email:
+            return jsonify({"error": "بيانات حساب Google غير مكتملة."}), 401
+
+        user = User.query.filter_by(email=email).first()
+
+        if not user:
+            random_password = os.urandom(32).hex()
+            user = User(email=email, password_hash=generate_password_hash(random_password))
+            db.session.add(user)
+            db.session.commit()
+
+        token = create_token(user)
+
+        return jsonify({
+            "message": "تم تسجيل الدخول باستخدام Google بنجاح.",
+            "user_id": str(user.id),
+            "email": user.email,
+            "token": token,
+            "plan": get_user_plan(user.id)[0],
+            "provider": "google",
+        }), 200
+
+    except firebase_auth.InvalidIdTokenError:
+        return jsonify({"error": "Firebase ID token غير صالح."}), 401
+    except firebase_auth.ExpiredIdTokenError:
+        return jsonify({"error": "Firebase ID token منتهي الصلاحية."}), 401
+    except Exception as error:
+        db.session.rollback()
+        print("GOOGLE AUTH ERROR:", repr(error))
+        return jsonify({"error": "تعذر تسجيل الدخول باستخدام Google."}), 401
 
 
 @app.route("/me", methods=["GET"])
