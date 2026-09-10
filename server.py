@@ -598,6 +598,24 @@ def me():
     }), 200
 
 
+@app.route("/auth/change-password", methods=["POST"])
+@auth_required
+def change_password():
+    user = request.current_user
+    data = request.get_json(silent=True) or {}
+    current_password = str(data.get("current_password", ""))
+    new_password = str(data.get("new_password", ""))
+    if not current_password or not new_password:
+        return jsonify({"error": "Current password and new password are required."}), 400
+    if len(new_password) < 8:
+        return jsonify({"error": "New password must be at least 8 characters."}), 400
+    if not check_password_hash(user.password_hash, current_password):
+        return jsonify({"error": "Current password is incorrect."}), 401
+    user.password_hash = generate_password_hash(new_password)
+    db.session.commit()
+    return jsonify({"message": "Password changed successfully."}), 200
+
+
 @app.route("/products/pro", methods=["GET"])
 def pro_product():
     return jsonify({
