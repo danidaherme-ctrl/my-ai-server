@@ -5,6 +5,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 import os
 import requests
+import base64
+import mimetypes
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 import firebase_admin
@@ -149,7 +151,9 @@ GEMINI_URL = (
 MAX_MESSAGE_LENGTH = 8000
 MAX_CONVERSATION_TITLE_LENGTH = 160
 MAX_JSON_BODY_BYTES = 64 * 1024
-app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BODY_BYTES
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_REQUEST_BYTES = 20 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
 SYSTEM_PROMPT = """
 أنت Gideon، مساعد ذكاء اصطناعي تم تطويره بواسطة Daniel.
@@ -365,6 +369,79 @@ def conversation_to_dict(conversation):
         "updated_at": conversation.updated_at.isoformat()
         if conversation.updated_at else None,
     }
+
+
+ALLOWED_ATTACHMENT_MIME_TYPES = {
+    "application/pdf",
+    "application/json",
+    "application/rtf",
+    "application/x-ipynb+json",
+    "application/x-javascript",
+    "application/x-typescript",
+    "application/x-python-code",
+}
+
+
+def get_attachment_from_request():
+    return (
+        request.files.get("attachment")
+        or request.files.get("file")
+        or request.files.get("image")
+    )
+
+
+def get_attachment_mime_type(file_storage):
+    supplied_mime = (file_storage.mimetype or "").strip().lower()
+    if supplied_mime and supplied_mime != "application/octet-stream":
+        return supplied_mime
+
+    guessed_mime, _ = mimetypes.guess_type(file_storage.filename or "")
+    return (guessed_mime or "application/octet-stream").lower()
+
+
+def is_supported_attachment_mime(mime_type):
+    return (
+        mime_type.startswith("image/")
+        or mime_type.startswith("text/")
+        or mime_type in ALLOWED_ATTACHMENT_MIME_TYPES
+    )
+
+
+def build_inline_attachment_part(file_storage):
+    filename = (file_storage.filename or "attachment").strip() or "attachment"
+    mime_type = get_attachment_mime_type(file_storage)
+
+    if not is_supported_attachment_mime(mime_type):
+        raise ValueError(
+            "نوع الملف غير مدعوم حاليًا. استخدم صورة أو PDF أو ملف نص/كود مدعوم."
+        )
+
+    file_bytes = file_storage.read()
+    file_size = len(file_bytes)
+
+    if file_size == 0:
+        raise ValueError("الملف المرفق فارغ.")
+
+    if file_size > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"حجم الملف كبير جدًا. الحد الأقصى {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+        )
+
+    encoded = base64.b64encode(file_bytes).decode("ascii")
+
+    return (
+        {
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": encoded,
+            }
+        },
+        {
+            "name": filename,
+            "mime_type": mime_type,
+            "size": file_size,
+        },
+    )
 
 
 @app.route("/health", methods=["GET"])
@@ -711,16 +788,40 @@ def chat():
             }), 500
 
         user = request.current_user
-        data = request.get_json(silent=True) or {}
-        message = data.get("message", "").strip()
+        is_multipart = bool(
+            request.content_type
+            and request.content_type.lower().startswith("multipart/form-data")
+        )
 
-        if not message:
-            return jsonify({"reply": "الرسالة فارغة."}), 400
+        if is_multipart:
+            message = (request.form.get("message") or "").strip()
+            conversation_id = request.form.get("conversation_id")
+            attachment = get_attachment_from_request()
+        else:
+            data = request.get_json(silent=True) or {}
+            message = (data.get("message") or "").strip()
+            conversation_id = data.get("conversation_id")
+            attachment = None
+
+        if not message and not attachment:
+            return jsonify({"reply": "الرسالة فارغة ولم يتم إرفاق ملف."}), 400
 
         if len(message) > MAX_MESSAGE_LENGTH:
             return jsonify({
                 "reply": f"الرسالة طويلة جدًا. الحد الأقصى {MAX_MESSAGE_LENGTH} حرف."
             }), 413
+
+        attachment_part = None
+        attachment_info = None
+        if attachment:
+            try:
+                attachment_part, attachment_info = build_inline_attachment_part(attachment)
+            except ValueError as error:
+                return jsonify({"reply": str(error)}), 400
+
+        effective_message = message
+        if not effective_message and attachment_info:
+            effective_message = "حلّل هذا المرفق واشرح محتواه بوضوح."
 
         plan, _ = get_user_plan(user.id)
         usage = get_usage_counter(user.id)
@@ -736,10 +837,9 @@ def chat():
                 "messages_remaining": 0,
             }), 429
 
-        conversation_id = data.get("conversation_id")
         conversation = None
 
-        if conversation_id is not None:
+        if conversation_id is not None and str(conversation_id).strip():
             try:
                 conversation_id = int(conversation_id)
             except (TypeError, ValueError):
@@ -760,15 +860,21 @@ def chat():
             user_id=user.id,
         ).count()
 
-        db.session.add(ConversationMessage(
+        stored_user_content = effective_message
+        if attachment_info:
+            stored_user_content += f"\n\n[مرفق: {attachment_info['name']}]"
+
+        user_message_record = ConversationMessage(
             conversation_id=conversation.id,
             user_id=user.id,
             role="user",
-            content=message,
-        ))
+            content=stored_user_content,
+        )
+        db.session.add(user_message_record)
 
         if existing_count == 0 or conversation.title == "New Chat":
-            conversation.title = make_title(message)
+            title_source = message or (attachment_info["name"] if attachment_info else "New Chat")
+            conversation.title = make_title(title_source)
 
         conversation.updated_at = datetime.now(timezone.utc)
         db.session.commit()
@@ -788,9 +894,22 @@ def chat():
         contents = []
         for msg in previous_messages:
             role = "model" if msg.role == "assistant" else "user"
+
+            if (
+                attachment_part
+                and msg.role == "user"
+                and msg.id == user_message_record.id
+            ):
+                parts = [
+                    {"text": effective_message},
+                    attachment_part,
+                ]
+            else:
+                parts = [{"text": msg.content}]
+
             contents.append({
                 "role": role,
-                "parts": [{"text": msg.content}],
+                "parts": parts,
             })
 
         payload = {
@@ -813,6 +932,13 @@ def chat():
         print("Model:", GEMINI_MODEL)
         print("Authenticated User:", user.email)
         print("Conversation:", conversation.id)
+        if attachment_info:
+            print(
+                "Attachment:",
+                attachment_info["name"],
+                attachment_info["mime_type"],
+                attachment_info["size"],
+            )
 
         response = requests.post(
             GEMINI_URL,
@@ -863,7 +989,7 @@ def chat():
         conversation.updated_at = datetime.now(timezone.utc)
         db.session.commit()
 
-        return jsonify({
+        response_body = {
             "reply": answer,
             "conversation_id": conversation.id,
             "conversation_title": conversation.title,
@@ -873,7 +999,12 @@ def chat():
                 "message_limit": message_limit,
                 "messages_remaining": max(0, message_limit - usage.messages_used),
             },
-        }), 200
+        }
+
+        if attachment_info:
+            response_body["attachment"] = attachment_info
+
+        return jsonify(response_body), 200
 
     except requests.exceptions.Timeout:
         return jsonify({
