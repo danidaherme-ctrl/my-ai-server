@@ -6,3 +6,4 @@ psycopg2-binary
 flask-cors
 PyJWT
 firebase-admin==7.5.0
+Flask-CORS
