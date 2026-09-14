@@ -11,6 +11,8 @@ from firebase_admin import credentials, auth as firebase_auth
 app = Flask(__name__)
 
 ALLOWED_ORIGINS = [
+    "https://gideon-assistant-app.web.app",
+    "https://gideon-assistant-app.firebaseapp.com",
     "https://gideonassistant.uk",
     "https://www.gideonassistant.uk",
     r"^http://localhost:\d+$",
