@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+﻿from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from functools import wraps
@@ -589,7 +589,7 @@ def google_auth():
         return jsonify({"error": "Firebase ID token غير صالح."}), 401
     except firebase_auth.ExpiredIdTokenError:
         return jsonify({"error": "Firebase ID token منتهي الصلاحية."}), 401
-        except Exception as error:
+    except Exception as error:
         db.session.rollback()
         print("GOOGLE AUTH ERROR:", repr(error), flush=True)
         return jsonify({"error": "حدث خطأ داخلي في السيرفر."}), 500
@@ -1066,3 +1066,6 @@ def new_chat():
 if __name__ == "__main__":
     print("Starting Gideon Server...")
     app.run(host="0.0.0.0", port=5000)
+
+
+
