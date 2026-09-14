@@ -1,12 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 import os
 import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth
-
 
 app = Flask(__name__)
 
