@@ -4,22 +4,27 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 import os
-import requests
-import base64
-import mimetypes
-from datetime import datetime, timedelta, timezone
-from functools import wraps
 import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth
 
+
 app = Flask(__name__)
-ALLOWED_ORIGINS = os.environ.get(
-    "ALLOWED_ORIGINS",
-    "https://gideonassistant.uk,https://www.gideonassistant.uk"
-)
+
+ALLOWED_ORIGINS = [
+    "https://gideonassistant.uk",
+    "https://www.gideonassistant.uk",
+    r"^http://localhost:\d+$",
+    r"^http://127\.0\.0\.1:\d+$",
+]
+
 CORS(
     app,
-    resources={r"/*": {"origins": [origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()]}},
+    resources={
+        r"/*": {
+            "origins": ALLOWED_ORIGINS,
+        }
+    },
+    supports_credentials=True,
 )
 
 database_url = os.environ.get("DATABASE_URL", "sqlite:///dani_ai.db")
