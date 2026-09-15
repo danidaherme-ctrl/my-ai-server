@@ -5,7 +5,7 @@ from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth
 
