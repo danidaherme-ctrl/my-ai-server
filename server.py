@@ -987,13 +987,24 @@ def register():
             "plan": "FREE",
         }), 201
 
-    except Exception as error:
-        db.session.rollback()
+   except Exception as error:
+    db.session.rollback()
 
-        print(
-            "REGISTER ERROR:",
-            repr(error),
-        )
+    import traceback
+
+    print(
+        "RESEARCH SERVER ERROR:",
+        repr(error),
+        flush=True,
+    )
+
+    traceback.print_exc()
+
+    return jsonify({
+        "error": "research_server_error",
+        "reply": "حدث خطأ أثناء تنفيذ البحث.",
+        "debug": str(error),
+    }), 500
 
         return jsonify({
             "error": "حدث خطأ أثناء إنشاء الحساب."
