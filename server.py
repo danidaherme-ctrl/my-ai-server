@@ -1188,16 +1188,44 @@ def usage():
             )
         ), 200
 
-    except Exception as error:
+        except Exception as error:
         db.session.rollback()
 
+        import traceback
+
         print(
-            "USAGE ERROR:",
-            repr(error),
+            "================ RESEARCH SERVER ERROR ================",
+            flush=True,
+        )
+
+        print(
+            "ERROR TYPE:",
+            type(error).__name__,
+            flush=True,
+        )
+
+        print(
+            "ERROR:",
+            str(error),
+            flush=True,
+        )
+
+        print(
+            "TRACEBACK:",
+            flush=True,
+        )
+
+        traceback.print_exc()
+
+        print(
+            "========================================================",
+            flush=True,
         )
 
         return jsonify({
-            "error": "تعذر تحميل الاستخدام."
+            "error": "research_server_error",
+            "reply": "حدث خطأ أثناء تنفيذ البحث.",
+            "debug": str(error),
         }), 500
 
 
