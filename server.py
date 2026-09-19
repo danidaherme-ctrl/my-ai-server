@@ -987,29 +987,18 @@ def register():
             "plan": "FREE",
         }), 201
 
-   except Exception as error:
-    db.session.rollback()
+    except Exception as error:
+        db.session.rollback()
 
-    import traceback
-
-    print(
-        "RESEARCH SERVER ERROR:",
-        repr(error),
-        flush=True,
-    )
-
-    traceback.print_exc()
-
-    return jsonify({
-        "error": "research_server_error",
-        "reply": "حدث خطأ أثناء تنفيذ البحث.",
-        "debug": str(error),
-    }), 500
+        print(
+            "REGISTER SERVER ERROR:",
+            repr(error),
+            flush=True,
+        )
 
         return jsonify({
             "error": "حدث خطأ أثناء إنشاء الحساب."
         }), 500
-
 
 # ============================================================
 # LOGIN
@@ -1188,44 +1177,17 @@ def usage():
             )
         ), 200
 
-        except Exception as error:
+    except Exception as error:
         db.session.rollback()
 
-        import traceback
-
         print(
-            "================ RESEARCH SERVER ERROR ================",
-            flush=True,
-        )
-
-        print(
-            "ERROR TYPE:",
-            type(error).__name__,
-            flush=True,
-        )
-
-        print(
-            "ERROR:",
-            str(error),
-            flush=True,
-        )
-
-        print(
-            "TRACEBACK:",
-            flush=True,
-        )
-
-        traceback.print_exc()
-
-        print(
-            "========================================================",
+            "USAGE SERVER ERROR:",
+            repr(error),
             flush=True,
         )
 
         return jsonify({
-            "error": "research_server_error",
-            "reply": "حدث خطأ أثناء تنفيذ البحث.",
-            "debug": str(error),
+            "error": "تعذر تحميل بيانات الاستخدام."
         }), 500
 
 
