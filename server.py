@@ -7,6 +7,9 @@ import os
 import requests
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+import firebase_admin
+
+from firebase_admin import credentials, auth as firebase_auth
 
 
 # ============================================================
@@ -16,6 +19,64 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
+
+# ============================================================
+# FIREBASE ADMIN
+# ============================================================
+
+firebase_project_id = os.environ.get(
+    "FIREBASE_PROJECT_ID"
+)
+
+firebase_client_email = os.environ.get(
+    "FIREBASE_CLIENT_EMAIL"
+)
+
+firebase_private_key = os.environ.get(
+    "FIREBASE_PRIVATE_KEY"
+)
+
+if (
+    firebase_project_id
+    and firebase_client_email
+    and firebase_private_key
+):
+    try:
+        firebase_private_key = (
+            firebase_private_key
+            .replace("\\n", "\n")
+        )
+
+        firebase_credential = (
+    credentials.Certificate({
+        "type": "service_account",
+        "project_id": firebase_project_id,
+        "private_key": firebase_private_key,
+        "client_email": firebase_client_email,
+        "token_uri": "https://oauth2.googleapis.com/token",
+    })
+)
+        firebase_admin.initialize_app(
+            firebase_credential
+        )
+
+        print(
+            "Firebase Admin: ENABLED",
+            flush=True,
+        )
+
+    except Exception as error:
+        print(
+            "Firebase Admin initialization error:",
+            repr(error),
+            flush=True,
+        )
+
+else:
+    print(
+        "Firebase Admin: NOT CONFIGURED",
+        flush=True,
+    )
 
 # ============================================================
 # DATABASE
@@ -1064,6 +1125,106 @@ def login():
             "error": "حدث خطأ أثناء تسجيل الدخول."
         }), 500
 
+# ============================================================
+# GOOGLE AUTH
+# ============================================================
+
+@app.route(
+    "/auth/google",
+    methods=["POST"],
+)
+def google_auth():
+    try:
+        data = request.get_json(
+            silent=True
+        ) or {}
+
+        id_token = (
+            data.get("id_token")
+            or ""
+        ).strip()
+
+        if not id_token:
+            return jsonify({
+                "error": "firebase_id_token_required",
+                "reply": "Firebase ID Token مطلوب.",
+            }), 400
+
+        if not firebase_admin._apps:
+            return jsonify({
+                "error": "firebase_not_configured",
+                "reply": "Firebase Authentication غير مهيأ على السيرفر.",
+            }), 500
+
+        decoded_token = firebase_auth.verify_id_token(
+            id_token
+        )
+
+        firebase_uid = decoded_token.get(
+            "uid"
+        )
+
+        email = (
+            decoded_token.get("email")
+            or ""
+        ).strip().lower()
+
+        if not firebase_uid or not email:
+            return jsonify({
+                "error": "firebase_user_invalid",
+                "reply": "بيانات مستخدم Firebase غير مكتملة.",
+            }), 401
+
+        user = User.query.filter_by(
+            email=email
+        ).first()
+
+        if not user:
+            user = User(
+                email=email,
+                password_hash=generate_password_hash(
+                    firebase_uid
+                ),
+            )
+
+            db.session.add(user)
+            db.session.commit()
+
+        token = create_token(user)
+
+        return jsonify({
+            "message": "تم تسجيل الدخول عبر Google بنجاح.",
+            "user_id": str(user.id),
+            "email": user.email,
+            "token": token,
+            "plan": get_user_plan(user.id)[0],
+        }), 200
+
+    except firebase_auth.InvalidIdTokenError:
+        return jsonify({
+            "error": "invalid_firebase_id_token",
+            "reply": "Firebase ID Token غير صالح.",
+        }), 401
+
+    except firebase_auth.ExpiredIdTokenError:
+        return jsonify({
+            "error": "expired_firebase_id_token",
+            "reply": "انتهت صلاحية Firebase ID Token.",
+        }), 401
+
+    except Exception as error:
+        db.session.rollback()
+
+        print(
+            "GOOGLE AUTH ERROR:",
+            repr(error),
+            flush=True,
+        )
+
+        return jsonify({
+            "error": "google_auth_server_error",
+            "reply": "حدث خطأ أثناء تسجيل الدخول عبر Google.",
+        }), 500
 
 # ============================================================
 # ME
