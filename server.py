@@ -359,7 +359,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 # Gemini 2.5 Flash supports Google Search grounding.
 GEMINI_MODEL = os.environ.get(
     "GEMINI_MODEL",
-    "gemini-2.5-flash",
+    "gemini-3.6-flash",
 )
 
 GEMINI_URL = (
@@ -2087,3 +2087,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=5000,
     )
+
