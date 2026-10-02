@@ -1,4 +1,4 @@
-﻿from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -1355,16 +1355,6 @@ def reconcile_whish_payment(payment):
         payment.status = "unknown"
         db.session.commit()
     return payment.status
-
-@app.route("/payments/whish/config-check", methods=["GET"])
-def whish_config_check():
-    return jsonify({
-        "channel_set": bool(WHISH_CHANNEL.strip()),
-        "secret_set": bool(WHISH_SECRET.strip()),
-        "website_url_set": bool(WHISH_WEBSITE_URL.strip()),
-        "backend_public_url_set": bool(BACKEND_PUBLIC_URL.strip()),
-        "whish_configured": whish_configured(),
-    })
 
 @app.route("/payments/whish/create", methods=["POST"])
 @auth_required

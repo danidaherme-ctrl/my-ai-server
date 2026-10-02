@@ -1,10 +1,10 @@
+
 flask
 gunicorn
 requests
 flask-sqlalchemy
 psycopg2-binary
+psycopg[binary]
 flask-cors
 PyJWT
 firebase-admin==7.5.0
-Flask-CORS
-paddle-python-sdk
