@@ -1,4 +1,4 @@
-﻿from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -344,6 +344,20 @@ class UsageCounter(db.Model):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class WhishPayment(db.Model):
+    __tablename__ = "whish_payments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    external_id = db.Column(db.String(100), nullable=False, unique=True, index=True)
+    user_id = db.Column(db.Integer, nullable=False, index=True)
+    amount = db.Column(db.String(20), nullable=False)
+    currency = db.Column(db.String(3), nullable=False, default="USD")
+    collect_url = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(30), nullable=False, default="pending", index=True)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 with app.app_context():
@@ -1245,6 +1259,223 @@ def me():
 
 
 # ============================================================
+# WHISH PAY (Sandbox by default)
+# ============================================================
+
+WHISH_BASE_URL = os.environ.get(
+    "WHISH_BASE_URL",
+    "https://partner.api.sbx.whish.money/itel-service/api",
+).rstrip("/")
+WHISH_CHANNEL = os.environ.get("WHISH_CHANNEL", "")
+WHISH_SECRET = os.environ.get("WHISH_SECRET", "")
+WHISH_WEBSITE_URL = os.environ.get("WHISH_WEBSITE_URL", "")
+WHISH_USER_AGENT = os.environ.get(
+    "WHISH_USER_AGENT",
+    "GedionAI/1.0 (https://gideonassistant.uk; support@gideonassistant.uk)",
+)
+BACKEND_PUBLIC_URL = os.environ.get("BACKEND_PUBLIC_URL", "").rstrip("/")
+WHISH_TIMEOUT_SECONDS = 20
+
+
+def whish_headers():
+    return {
+        "channel": WHISH_CHANNEL,
+        "secret": WHISH_SECRET,
+        "websiteUrl": WHISH_WEBSITE_URL,
+        "User-Agent": WHISH_USER_AGENT,
+        "Content-Type": "application/json",
+    }
+
+
+def whish_configured():
+    return all([WHISH_CHANNEL, WHISH_SECRET, WHISH_WEBSITE_URL, BACKEND_PUBLIC_URL])
+
+
+def verify_whish_payment(payment):
+    """Query Whish's server-side status; callbacks are never treated as proof."""
+    response = requests.post(
+        f"{WHISH_BASE_URL}/payment/collect/status",
+        headers=whish_headers(),
+        json={"currency": payment.currency, "externalId": payment.external_id},
+        timeout=WHISH_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status") is not True:
+        code = payload.get("code") or "whish_status_error"
+        raise RuntimeError(f"Whish status request failed: {code}")
+    data = payload.get("data") or {}
+    return data.get("collectStatus", "unknown")
+
+
+def activate_whish_subscription(payment):
+    """Idempotently activate one month of Pro for a verified successful payment."""
+    existing = Subscription.query.filter_by(transaction_id=payment.external_id).first()
+    if existing:
+        payment.status = "success"
+        db.session.commit()
+        return
+
+    now = datetime.now(timezone.utc)
+    current = get_active_subscription(payment.user_id)
+    start_at = now
+    if current and current.plan.upper() == "PRO" and current.expires_at:
+        expiry = current.expires_at
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        start_at = max(now, expiry)
+
+    subscription = Subscription(
+        user_id=payment.user_id,
+        plan="PRO",
+        platform="whish_pay",
+        product_id="gideon_pro_monthly",
+        transaction_id=payment.external_id,
+        status="active",
+        started_at=start_at,
+        expires_at=start_at + timedelta(days=30),
+        auto_renewing=0,
+    )
+    payment.status = "success"
+    db.session.add(subscription)
+    db.session.commit()
+
+
+def reconcile_whish_payment(payment):
+    status = verify_whish_payment(payment)
+    if status == "success":
+        activate_whish_subscription(payment)
+    elif status == "failed":
+        payment.status = "failed"
+        db.session.commit()
+    elif status in ("pending", "refunded", "unknown"):
+        payment.status = status
+        db.session.commit()
+    else:
+        payment.status = "unknown"
+        db.session.commit()
+    return payment.status
+
+
+@app.route("/payments/whish/create", methods=["POST"])
+@auth_required
+def create_whish_payment():
+    if not whish_configured():
+        return jsonify({"error": "Whish Pay is not configured on the server."}), 503
+
+    try:
+        user = request.current_user
+        data = request.get_json(silent=True) or {}
+        # Price is fixed server-side; clients cannot choose a cheaper amount.
+        amount = str(PRO_MONTHLY_PRICE_USD)
+        currency = "USD"
+        external_id = "gedion-" + __import__("uuid").uuid4().hex
+        payment = WhishPayment(
+            external_id=external_id,
+            user_id=user.id,
+            amount=amount,
+            currency=currency,
+            status="creating",
+        )
+        db.session.add(payment)
+        db.session.commit()
+
+        callback_base = f"{BACKEND_PUBLIC_URL}/payments/whish/callback"
+        redirect_base = f"{BACKEND_PUBLIC_URL}/payments/whish/return"
+        body = {
+            "amount": amount,
+            "currency": currency,
+            "invoice": "Gideon Pro - 1 month",
+            "externalId": external_id,
+            "successCallbackUrl": f"{callback_base}/success?externalId={external_id}&currency={currency}",
+            "failureCallbackUrl": f"{callback_base}/failure?externalId={external_id}&currency={currency}",
+            "successRedirectUrl": f"{redirect_base}?result=success&externalId={external_id}",
+            "failureRedirectUrl": f"{redirect_base}?result=failure&externalId={external_id}",
+        }
+        response = requests.post(
+            f"{WHISH_BASE_URL}/payment/whish",
+            headers=whish_headers(),
+            json=body,
+            timeout=WHISH_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("status") is not True:
+            payment.status = "error"
+            db.session.commit()
+            return jsonify({"error": "Whish could not create the payment.", "code": payload.get("code")}), 502
+
+        collect_url = (payload.get("data") or {}).get("collectUrl")
+        if not collect_url:
+            payment.status = "error"
+            db.session.commit()
+            return jsonify({"error": "Whish response did not contain collectUrl."}), 502
+
+        payment.collect_url = collect_url
+        payment.status = "pending"
+        db.session.commit()
+        return jsonify({
+            "externalId": external_id,
+            "collectUrl": collect_url,
+            "amount": amount,
+            "currency": currency,
+            "status": "pending",
+        }), 201
+    except requests.RequestException as error:
+        db.session.rollback()
+        app.logger.error("Whish create request failed: %s", type(error).__name__)
+        return jsonify({"error": "Could not contact Whish Pay. Please retry."}), 502
+    except Exception as error:
+        db.session.rollback()
+        app.logger.exception("Whish payment creation failed")
+        return jsonify({"error": "Could not create Whish payment."}), 500
+
+
+@app.route("/payments/whish/status/<external_id>", methods=["GET"])
+@auth_required
+def whish_payment_status(external_id):
+    payment = WhishPayment.query.filter_by(external_id=external_id, user_id=request.current_user.id).first()
+    if not payment:
+        return jsonify({"error": "Payment not found."}), 404
+    try:
+        status = reconcile_whish_payment(payment)
+        return jsonify({"externalId": payment.external_id, "status": status, "plan": get_user_plan(request.current_user.id)[0]}), 200
+    except requests.RequestException as error:
+        app.logger.error("Whish status request failed: %s", type(error).__name__)
+        return jsonify({"error": "Could not verify payment status yet. Please retry."}), 502
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Whish status reconciliation failed")
+        return jsonify({"error": "Could not verify payment status yet."}), 502
+
+
+@app.route("/payments/whish/callback/<attempt_result>", methods=["GET"])
+def whish_payment_callback(attempt_result):
+    # Whish callbacks are unauthenticated; they are only a trigger to verify via API.
+    external_id = request.args.get("externalId", "")
+    payment = WhishPayment.query.filter_by(external_id=external_id).first()
+    if not payment:
+        return "OK", 200
+    try:
+        reconcile_whish_payment(payment)
+    except Exception as error:
+        db.session.rollback()
+        app.logger.warning("Whish callback reconciliation deferred (%s)", type(error).__name__)
+    # Failure callback does not cancel the order; status may remain pending.
+    return "OK", 200
+
+
+@app.route("/payments/whish/return", methods=["GET"])
+def whish_payment_return():
+    # Browser redirects are not proof of payment. Client should call status endpoint.
+    return jsonify({
+        "message": "Return received. Check payment status in the app.",
+        "externalId": request.args.get("externalId"),
+        "result": request.args.get("result", "unknown"),
+    }), 200
+
+
+# ============================================================
 # PRO PRODUCT
 # ============================================================
 
@@ -1263,7 +1494,7 @@ def pro_product():
         "payment_channels": {
             "google_play": "coming_soon",
             "apple_app_store": "coming_soon",
-            "whish_pay": "pending_merchant_integration",
+            "whish_pay": "available_in_sandbox" if whish_configured() else "configuration_required",
         },
     }), 200
 
