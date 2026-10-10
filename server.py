@@ -1501,8 +1501,6 @@ def whish_payment_callback(attempt_result):
 
     return "OK", 200
 
-
-
 @app.route("/payments/whish/return", methods=["GET"])
 def whish_payment_return():
     # Browser redirects are not proof of payment. Client should call status endpoint.
