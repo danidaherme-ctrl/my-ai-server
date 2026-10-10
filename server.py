@@ -1490,6 +1490,16 @@ def whish_payment_callback(attempt_result):
         payment.external_id,
         payment.status,
     )
+        try:
+        reconcile_whish_payment(payment)
+    except Exception as error:
+        db.session.rollback()
+        app.logger.warning(
+            "Whish callback reconciliation deferred (%s)",
+            type(error).__name__,
+        )
+
+    return "OK", 200
 
 
 
