@@ -1466,17 +1466,31 @@ def whish_payment_status(external_id):
 @app.route("/payments/whish/callback/<attempt_result>", methods=["GET"])
 def whish_payment_callback(attempt_result):
     # Whish callbacks are unauthenticated; they are only a trigger to verify via API.
+    
     external_id = request.args.get("externalId", "")
-    payment = WhishPayment.query.filter_by(external_id=external_id).first()
+    app.logger.info(
+        "Whish callback received: externalId=%s, attempt=%s",
+        external_id,
+        attempt_result,
+    )
+
+    payment = WhishPayment.query.filter_by(
+        external_id=external_id
+    ).first()
+
     if not payment:
+        app.logger.warning(
+            "Whish payment record not found: externalId=%s",
+            external_id,
+        )
         return "OK", 200
-    try:
-        reconcile_whish_payment(payment)
-    except Exception as error:
-        db.session.rollback()
-        app.logger.warning("Whish callback reconciliation deferred (%s)", type(error).__name__)
-    # Failure callback does not cancel the order; status may remain pending.
-    return "OK", 200
+
+    app.logger.info(
+        "Whish payment record found: externalId=%s, status=%s",
+        payment.external_id,
+        payment.status,
+    )
+
 
 
 @app.route("/payments/whish/return", methods=["GET"])
