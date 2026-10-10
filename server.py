@@ -398,6 +398,19 @@ SYSTEM_PROMPT = """
 """
 
 
+PRO_SYSTEM_PROMPT = """
+أنت Gideon Pro، مساعد متقدم للمشتركين.
+- حلّل السؤال قبل الإجابة، وقدّم جوابًا دقيقًا ومنظمًا ومباشرًا.
+- في المسائل المعقدة، اشرح الخطوات والافتراضات والقيود المهمة.
+- لا تختلق حقائق أو مصادر أو أرقامًا؛ صرّح بوضوح عندما لا تكون متأكدًا.
+- أجب بلغة المستخدم، واستخدم أمثلة عملية عندما تفيد.
+- إذا طلب المستخدم كودًا، قدّم حلًا قابلًا للتطبيق واشرح أهم نقاطه.
+- إذا كان السؤال يحتاج معلومات حديثة أو تحققًا من حقائق متغيرة، استخدم البحث على الويب عندما يكون متاحًا.
+- لا تدّعِ أنك بحثت على الويب ما لم تُنفّذ عملية البحث فعلًا.
+- أنت Gideon، طوّره Daniel.
+"""
+
+
 RESEARCH_SYSTEM_PROMPT = """
 أنت Gideon Research.
 
@@ -1975,10 +1988,25 @@ def chat():
             message,
         )
 
+        # Pro gets more rigorous instructions. Web grounding is only enabled
+        # for queries that are likely to require current or externally verified facts.
+        search_terms = (
+            "latest", "today", "current", "recent", "news", "price", "weather",
+            "2025", "2026", "source", "sources", "research", "search",
+            "آخر", "اليوم", "حالي", "حديث", "أخبار", "سعر", "طقس",
+            "مصدر", "مصادر", "ابحث", "بحث", "مقارنة", "القانون", "قانون",
+        )
+        needs_web_search = (
+            plan == "PRO"
+            and any(term in message.lower() for term in search_terms)
+        )
+
         _, answer = call_gemini(
             contents,
-            system_instruction=SYSTEM_PROMPT,
-            use_google_search=False,
+            system_instruction=(
+                PRO_SYSTEM_PROMPT if plan == "PRO" else SYSTEM_PROMPT
+            ),
+            use_google_search=needs_web_search,
         )
 
         db.session.add(
