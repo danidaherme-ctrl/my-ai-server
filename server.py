@@ -1485,12 +1485,13 @@ def whish_payment_callback(attempt_result):
         )
         return "OK", 200
 
-    app.logger.info(
+        app.logger.info(
         "Whish payment record found: externalId=%s, status=%s",
         payment.external_id,
         payment.status,
     )
-        try:
+
+    try:
         reconcile_whish_payment(payment)
     except Exception as error:
         db.session.rollback()
