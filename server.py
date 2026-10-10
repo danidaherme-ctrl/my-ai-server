@@ -1463,10 +1463,9 @@ def whish_payment_status(external_id):
         return jsonify({"error": "Could not verify payment status yet."}), 502
 
 
+
 @app.route("/payments/whish/callback/<attempt_result>", methods=["GET"])
 def whish_payment_callback(attempt_result):
-    # Whish callbacks are unauthenticated; they are only a trigger to verify via API.
-    
     external_id = request.args.get("externalId", "")
     app.logger.info(
         "Whish callback received: externalId=%s, attempt=%s",
@@ -1485,7 +1484,7 @@ def whish_payment_callback(attempt_result):
         )
         return "OK", 200
 
-        app.logger.info(
+    app.logger.info(
         "Whish payment record found: externalId=%s, status=%s",
         payment.external_id,
         payment.status,
@@ -1501,7 +1500,7 @@ def whish_payment_callback(attempt_result):
         )
 
     return "OK", 200
-
+    
 @app.route("/payments/whish/return", methods=["GET"])
 def whish_payment_return():
     # Browser redirects are not proof of payment. Client should call status endpoint.
