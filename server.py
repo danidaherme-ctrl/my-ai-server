@@ -1967,6 +1967,14 @@ def chat():
                 message
             )
 
+        # Build the conversation context before saving the new message.
+        contents = build_history_contents(
+            conversation,
+            user.id,
+            message,
+        )
+
+        # Save the user message once.
         db.session.add(
             ConversationMessage(
                 conversation_id=conversation.id,
@@ -1981,12 +1989,6 @@ def chat():
         )
 
         db.session.commit()
-
-        contents = build_history_contents(
-            conversation,
-            user.id,
-            message,
-        )
 
         # Pro gets more rigorous instructions. Web grounding is only enabled
         # for queries that are likely to require current or externally verified facts.
