@@ -1306,13 +1306,18 @@ def verify_whish_payment(payment):
         "collectStatus": (payload.get("data") or {}).get("collectStatus")
     },
 )
-    response.raise_for_status()
+       response.raise_for_status()
     payload = response.json()
+
+    app.logger.info(
+        "Whish status response: status=%s, data=%s",
+        payload.get("status"),
+        {
+            "collectStatus": (payload.get("data") or {}).get("collectStatus")
+        },
+    )
+
     if payload.get("status") is not True:
-        code = payload.get("code") or "whish_status_error"
-        raise RuntimeError(f"Whish status request failed: {code}")
-    data = payload.get("data") or {}
-    return data.get("collectStatus", "unknown")
 
 
 def activate_whish_subscription(payment):
