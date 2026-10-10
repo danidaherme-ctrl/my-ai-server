@@ -1291,22 +1291,19 @@ def whish_configured():
     return all([WHISH_CHANNEL, WHISH_SECRET, WHISH_WEBSITE_URL, BACKEND_PUBLIC_URL])
 
 
+
 def verify_whish_payment(payment):
     """Query Whish's server-side status; callbacks are never treated as proof."""
     response = requests.post(
         f"{WHISH_BASE_URL}/payment/collect/status",
         headers=whish_headers(),
-        json={"currency": payment.currency, "externalId": payment.external_id},
+        json={
+            "currency": payment.currency,
+            "externalId": payment.external_id,
+        },
         timeout=WHISH_TIMEOUT_SECONDS,
     )
-    app.logger.info(
-    "Whish status response: status=%s, data=%s",
-    payload.get("status"),
-    {
-        "collectStatus": (payload.get("data") or {}).get("collectStatus")
-    },
-)
-       response.raise_for_status()
+    response.raise_for_status()
     payload = response.json()
 
     app.logger.info(
@@ -1318,6 +1315,12 @@ def verify_whish_payment(payment):
     )
 
     if payload.get("status") is not True:
+        code = payload.get("code") or "whish_status_error"
+        raise RuntimeError(f"Whish status request failed: {code}")
+
+    data = payload.get("data") or {}
+    return data.get("collectStatus", "unknown")
+
 
 
 def activate_whish_subscription(payment):
