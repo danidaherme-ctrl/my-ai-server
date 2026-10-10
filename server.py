@@ -1299,6 +1299,13 @@ def verify_whish_payment(payment):
         json={"currency": payment.currency, "externalId": payment.external_id},
         timeout=WHISH_TIMEOUT_SECONDS,
     )
+    app.logger.info(
+    "Whish status response: status=%s, data=%s",
+    payload.get("status"),
+    {
+        "collectStatus": (payload.get("data") or {}).get("collectStatus")
+    },
+)
     response.raise_for_status()
     payload = response.json()
     if payload.get("status") is not True:
